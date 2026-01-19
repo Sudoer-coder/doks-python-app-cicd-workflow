@@ -80,13 +80,16 @@ jobs:
         run: |
           echo "🔧 Configuring kubeconfig..."
           echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig
+          chmod 600 kubeconfig
           echo "KUBECONFIG=$PWD/kubeconfig" >> $GITHUB_ENV
           echo "✅ kubeconfig ready"
 
       - name: Verify cluster connectivity
         run: |
+          echo "🔍 Verifying Kubernetes connectivity..."
           kubectl cluster-info
           kubectl get nodes
+          echo "✅ Cluster connectivity verified"
 
       - name: Create DEV namespace if missing
         run: |
