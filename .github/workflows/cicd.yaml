@@ -11,6 +11,9 @@ env:
   REGISTRY: registry.digitalocean.com/${{ secrets.DO_REGISTRY }}
 
 jobs:
+# --------------------------------------------------
+# BUILD & PUSH IMAGE
+# --------------------------------------------------
   build:
     name: Build & Push Image
     runs-on: ubuntu-latest
@@ -22,40 +25,33 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Decide image version (tag or commit)
+      - name: Decide image version
         id: meta
         run: |
-          echo "Checking whether this build is from a git tag or normal commit..."
-
+          echo "🔍 Determining image version..."
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
-            echo "Git tag detected: $TAG"
+            echo "🏷 Using git tag: $TAG"
           else
             TAG="${GITHUB_SHA::7}"
-            echo "No git tag found. Using commit SHA: $TAG"
+            echo "🧩 Using commit SHA: $TAG"
           fi
-
           echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Image version set to: $TAG"
 
-      - name: Install DigitalOcean CLI (doctl)
+      - name: Install DigitalOcean CLI
         uses: digitalocean/action-doctl@v2
         with:
           token: ${{ secrets.DO_TOKEN }}
 
       - name: Verify registry access
         run: |
-          echo "Verifying access to DigitalOcean Container Registry..."
+          echo "🔐 Verifying registry access..."
           doctl registry get
-          echo "Listing existing repositories in registry:"
           doctl registry repository list
-          echo "Registry access verified"
+          echo "✅ Registry access OK"
 
-      - name: Login to DigitalOcean Container Registry
-        run: |
-          echo "Logging in to DigitalOcean Container Registry..."
-          doctl registry login
-          echo "Registry login successful"
+      - name: Login to DigitalOcean Registry
+        run: doctl registry login
 
       - name: Build and push Docker image
         run: |
@@ -64,11 +60,14 @@ jobs:
             --build-arg VERSION=${{ steps.meta.outputs.tag }} \
             -t $REGISTRY/$IMAGE_NAME:${{ steps.meta.outputs.tag }} .
 
-          echo "Pushing image to registry..."
+          echo "🚀 Pushing Docker image..."
           docker push $REGISTRY/$IMAGE_NAME:${{ steps.meta.outputs.tag }}
 
-          echo "Image pushed: $REGISTRY/$IMAGE_NAME:${{ steps.meta.outputs.tag }}"
+          echo "✅ Image pushed: $REGISTRY/$IMAGE_NAME:${{ steps.meta.outputs.tag }}"
 
+# --------------------------------------------------
+# DEPLOY TO DEV
+# --------------------------------------------------
   deploy-dev:
     name: Deploy to DEV
     needs: build
@@ -77,16 +76,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure Kubernetes access
+      - name: Configure kubeconfig
         run: |
-          echo "🔧 Setting up kubeconfig for DEV deployment..."
+          echo "🔧 Configuring kubeconfig..."
           echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig
-          export KUBECONFIG=$PWD/kubeconfig
-          echo "kubeconfig ready"
+          echo "KUBECONFIG=$PWD/kubeconfig" >> $GITHUB_ENV
+          echo "✅ kubeconfig ready"
 
-      - name: Deploy application to DEV namespace
+      - name: Verify cluster connectivity
         run: |
-          echo "Deploying application to DEV namespace..."
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Create DEV namespace if missing
+        run: |
+          kubectl get ns dev || kubectl create ns dev
+
+      - name: Deploy application to DEV
+        run: |
+          echo "🚀 Deploying application to DEV namespace..."
 
           kubectl apply -n dev -f k8s/dev/
 
@@ -97,32 +105,40 @@ jobs:
           kubectl set env deployment/python-app \
             APP_VERSION=${{ needs.build.outputs.image_tag }} \
             GIT_COMMIT=${{ github.sha }} \
+            ENV=dev \
             -n dev
 
-          echo "DEV deployment completed successfully"
+          echo "✅ DEV deployment completed successfully"
 
+# --------------------------------------------------
+# DEPLOY TO PROD (MANUAL APPROVAL)
+# --------------------------------------------------
   deploy-prod:
     name: Deploy to PROD
     needs: deploy-dev
     runs-on: ubuntu-latest
 
     environment:
-      name: production   # Manual approval required
+      name: production   # ⛔ Manual approval required
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure Kubernetes access
+      - name: Configure kubeconfig
         run: |
-          echo "Setting up kubeconfig for PROD deployment..."
+          echo "🔧 Configuring kubeconfig..."
           echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig
-          export KUBECONFIG=$PWD/kubeconfig
-          echo "kubeconfig ready"
+          echo "KUBECONFIG=$PWD/kubeconfig" >> $GITHUB_ENV
+          echo "✅ kubeconfig ready"
 
-      - name: Deploy application to PROD namespace
+      - name: Create PROD namespace if missing
         run: |
-          echo "Deploying application to PROD namespace..."
-          echo "This step runs only after manual approval"
+          kubectl get ns prod || kubectl create ns prod
+
+      - name: Deploy application to PROD
+        run: |
+          echo "🚀 Deploying application to PROD namespace..."
+          echo "⛔ This step runs only after manual approval"
 
           kubectl apply -n prod -f k8s/prod/
 
@@ -133,6 +149,7 @@ jobs:
           kubectl set env deployment/python-app \
             APP_VERSION=${{ needs.build.outputs.image_tag }} \
             GIT_COMMIT=${{ github.sha }} \
+            ENV=prod \
             -n prod
 
-          echo "Production deployment completed successfully"
+          echo "🎉 Production deployment completed successfully"
