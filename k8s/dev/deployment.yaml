@@ -14,7 +14,7 @@ spec:
         app: python-app
     spec:
       containers:
-        - name: python-container
+        - name: app
           image: registry.digitalocean.com/YOUR_REGISTRY/python-app:latest
           ports:
             - containerPort: 5000
