@@ -1,0 +1,74 @@
+name: DOKS CI/CD
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ "v*" ]
+
+env:
+  IMAGE_NAME: python-app
+  REGISTRY: registry.digitalocean.com/${{ secrets.DO_REGISTRY }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DO_TOKEN }}
+
+      - name: Login to registry
+        run: doctl registry login
+
+      - name: Build and push image
+        run: |
+          docker build \
+            --build-arg VERSION=${{ github.sha }} \
+            -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} .
+          docker push $REGISTRY/$IMAGE_NAME:${{ github.sha }}
+
+  deploy-dev:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set kubeconfig
+        run: |
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig
+          export KUBECONFIG=$PWD/kubeconfig
+
+      - name: Deploy DEV
+        run: |
+          kubectl set image deployment/python-app app=$REGISTRY/$IMAGE_NAME:${{ github.sha }} -n dev || \
+          kubectl apply -f k8s/dev/
+
+          kubectl set env deployment/python-app \
+            APP_VERSION=${{ github.sha }} \
+            GIT_COMMIT=${{ github.sha }} \
+            -n dev
+
+  deploy-prod:
+    needs: deploy-dev
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set kubeconfig
+        run: |
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig
+          export KUBECONFIG=$PWD/kubeconfig
+
+      - name: Deploy PROD
+        run: |
+          kubectl set image deployment/python-app app=$REGISTRY/$IMAGE_NAME:${{ github.sha }} -n prod || \
+          kubectl apply -f k8s/prod/
+
+          kubectl set env deployment/python-app \
+            APP_VERSION=${{ github.sha }} \
+            GIT_COMMIT=${{ github.sha }} \
+            -n prod
