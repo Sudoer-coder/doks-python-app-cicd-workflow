@@ -1,0 +1,4 @@
+kubeconfig
+*.kubeconfig
+*doks*-kubeconfig*.yaml
+.env
