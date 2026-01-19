@@ -2,8 +2,9 @@ name: DOKS CI/CD
 
 on:
   push:
-    branches: [ main ]
-    tags: [ "v*" ]
+    branches: [ "main" ]
+    tags:
+      - "v*"
 
 env:
   IMAGE_NAME: python-app
@@ -11,64 +12,127 @@ env:
 
 jobs:
   build:
+    name: Build & Push Image
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - uses: digitalocean/action-doctl@v2
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Decide image version (tag or commit)
+        id: meta
+        run: |
+          echo "Checking whether this build is from a git tag or normal commit..."
+
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            echo "Git tag detected: $TAG"
+          else
+            TAG="${GITHUB_SHA::7}"
+            echo "No git tag found. Using commit SHA: $TAG"
+          fi
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Image version set to: $TAG"
+
+      - name: Install DigitalOcean CLI (doctl)
+        uses: digitalocean/action-doctl@v2
         with:
           token: ${{ secrets.DO_TOKEN }}
 
-      - name: Login to registry
-        run: doctl registry login
-
-      - name: Build and push image
+      - name: Verify registry access
         run: |
+          echo "Verifying access to DigitalOcean Container Registry..."
+          doctl registry get
+          echo "Listing existing repositories in registry:"
+          doctl registry repository list
+          echo "Registry access verified"
+
+      - name: Login to DigitalOcean Container Registry
+        run: |
+          echo "Logging in to DigitalOcean Container Registry..."
+          doctl registry login
+          echo "Registry login successful"
+
+      - name: Build and push Docker image
+        run: |
+          echo "🐳 Building Docker image..."
           docker build \
-            --build-arg VERSION=${{ github.sha }} \
-            -t $REGISTRY/$IMAGE_NAME:${{ github.sha }} .
-          docker push $REGISTRY/$IMAGE_NAME:${{ github.sha }}
+            --build-arg VERSION=${{ steps.meta.outputs.tag }} \
+            -t $REGISTRY/$IMAGE_NAME:${{ steps.meta.outputs.tag }} .
+
+          echo "Pushing image to registry..."
+          docker push $REGISTRY/$IMAGE_NAME:${{ steps.meta.outputs.tag }}
+
+          echo "Image pushed: $REGISTRY/$IMAGE_NAME:${{ steps.meta.outputs.tag }}"
 
   deploy-dev:
+    name: Deploy to DEV
     needs: build
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set kubeconfig
+      - name: Configure Kubernetes access
         run: |
+          echo "🔧 Setting up kubeconfig for DEV deployment..."
           echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig
           export KUBECONFIG=$PWD/kubeconfig
+          echo "kubeconfig ready"
 
-      - name: Deploy DEV
+      - name: Deploy application to DEV namespace
         run: |
-          kubectl set image deployment/python-app app=$REGISTRY/$IMAGE_NAME:${{ github.sha }} -n dev || \
-          kubectl apply -f k8s/dev/
+          echo "Deploying application to DEV namespace..."
+
+          kubectl apply -n dev -f k8s/dev/
+
+          kubectl set image deployment/python-app \
+            app=$REGISTRY/$IMAGE_NAME:${{ needs.build.outputs.image_tag }} \
+            -n dev
 
           kubectl set env deployment/python-app \
-            APP_VERSION=${{ github.sha }} \
+            APP_VERSION=${{ needs.build.outputs.image_tag }} \
             GIT_COMMIT=${{ github.sha }} \
             -n dev
 
+          echo "DEV deployment completed successfully"
+
   deploy-prod:
+    name: Deploy to PROD
     needs: deploy-dev
     runs-on: ubuntu-latest
+
     environment:
-      name: production
+      name: production   # Manual approval required
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set kubeconfig
+      - name: Configure Kubernetes access
         run: |
+          echo "Setting up kubeconfig for PROD deployment..."
           echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig
           export KUBECONFIG=$PWD/kubeconfig
+          echo "kubeconfig ready"
 
-      - name: Deploy PROD
+      - name: Deploy application to PROD namespace
         run: |
-          kubectl set image deployment/python-app app=$REGISTRY/$IMAGE_NAME:${{ github.sha }} -n prod || \
-          kubectl apply -f k8s/prod/
+          echo "Deploying application to PROD namespace..."
+          echo "This step runs only after manual approval"
+
+          kubectl apply -n prod -f k8s/prod/
+
+          kubectl set image deployment/python-app \
+            app=$REGISTRY/$IMAGE_NAME:${{ needs.build.outputs.image_tag }} \
+            -n prod
 
           kubectl set env deployment/python-app \
-            APP_VERSION=${{ github.sha }} \
+            APP_VERSION=${{ needs.build.outputs.image_tag }} \
             GIT_COMMIT=${{ github.sha }} \
             -n prod
+
+          echo "Production deployment completed successfully"
